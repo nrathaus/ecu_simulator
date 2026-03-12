@@ -54,12 +54,12 @@ class DTC:
 
     @property
     def code_str(self) -> str:
-        # Top 2 bits of the first wire byte select the prefix
-        high_byte = (self.code >> 16) & 0xFF
-        prefix = {0b00: "P", 0b01: "C", 0b10: "B", 0b11: "U"}[(high_byte >> 6) & 0x03]
-        # Remaining 14 bits (mask off top 2) form the numeric part
-        number = self.code & 0x3FFF
-        return f"{prefix}{number:04X}"
+        # ISO 14229: top 2 bits of byte 0 = prefix, byte 1 + byte 2 = number
+        b0 = (self.code >> 16) & 0xFF
+        b1 = (self.code >> 8) & 0xFF
+        b2 = self.code & 0xFF
+        prefix = {0b00: "P", 0b01: "C", 0b10: "B", 0b11: "U"}[(b0 >> 6) & 0x03]
+        return f"{prefix}{b1:02X}{b2:02X}"
 
     @property
     def status_str(self) -> str:
@@ -106,7 +106,7 @@ class AttackPhaseResult:
         return "\n".join(lines)
 
 
-# ── Transport ──────────────────────────────────────────────────────────────
+# ── Transport helpers ──────────────────────────────────────────────────────
 
 
 def encode_sf(data: bytes) -> bytes:
@@ -114,14 +114,9 @@ def encode_sf(data: bytes) -> bytes:
     return bytes([len(data)]) + data + bytes(7 - len(data))
 
 
-def decode_sf(raw: bytes) -> bytes | None:
-    if not raw:
-        return None
-    length = raw[0] & 0x0F
-    return bytes(raw[1 : 1 + length])
-
-
-def recv_uds(bus: can.BusABC, rx_id: int, timeout: float = 1.0) -> bytes | None:
+def recv_uds(
+    bus: can.BusABC, rx_id: int, tx_id: int, timeout: float = 1.0
+) -> bytes | None:
     """Receive a UDS response, handling single-frame and multi-frame (ISO 15765-2)."""
     deadline = time.monotonic() + timeout
     buf = b""
@@ -136,15 +131,15 @@ def recv_uds(bus: can.BusABC, rx_id: int, timeout: float = 1.0) -> bytes | None:
         frame_type = (d[0] & 0xF0) >> 4
 
         if frame_type == 0:  # Single Frame
-            return decode_sf(d)
-        elif frame_type == 1:  # First Frame
+            length = d[0] & 0x0F
+            return bytes(d[1 : 1 + length])
+
+        elif frame_type == 1:  # First Frame — send Flow Control
             expected_len = ((d[0] & 0x0F) << 8) | d[1]
             buf = d[2:]
-            # Send Flow Control
             fc = bytes([0x30, 0x00, 0x00]) + bytes(5)
-            bus.send(
-                can.Message(arbitration_id=rx_id - 8, data=fc, is_extended_id=False)
-            )
+            bus.send(can.Message(arbitration_id=tx_id, data=fc, is_extended_id=False))
+
         elif frame_type == 2:  # Consecutive Frame
             sn = d[0] & 0x0F
             if sn != sn_expected & 0x0F:
@@ -153,10 +148,11 @@ def recv_uds(bus: can.BusABC, rx_id: int, timeout: float = 1.0) -> bytes | None:
             sn_expected += 1
             if expected_len and len(buf) >= expected_len:
                 return buf[:expected_len]
+
     return None
 
 
-# ── UDS DTC reader ─────────────────────────────────────────────────────────
+# ── UDS Client ─────────────────────────────────────────────────────────────
 
 
 class UDSClient:
@@ -165,35 +161,38 @@ class UDSClient:
             interface=INTERFACE, channel=CHANNEL, bitrate=500_000
         )
 
-    def clear_all_dtcs(self):
-        """Send ClearDTC (0x14) to all ECUs to reset state between phases."""
-        for _, ecu in ECUS.items():
-            req = bytes([0x14, 0xFF, 0xFF, 0xFF])
-            self.bus.send(
-                can.Message(
-                    arbitration_id=ecu["tx"], data=encode_sf(req), is_extended_id=False
-                )
-            )
-            time.sleep(0.05)
-
-    def read_dtcs(self, ecu_name: str, status_mask: int = 0xFF) -> set[DTC]:
-        ecu = ECUS[ecu_name]
-        req = bytes([SID_READ_DTC, SUB_DTC_BY_STATUS, status_mask])
+    def _send(self, tx_id: int, payload: bytes) -> None:
         self.bus.send(
             can.Message(
-                arbitration_id=ecu["tx"], data=encode_sf(req), is_extended_id=False
+                arbitration_id=tx_id, data=encode_sf(payload), is_extended_id=False
             )
         )
 
-        resp = recv_uds(self.bus, ecu["rx"])
-        if not resp or resp[0] != SID_READ_DTC + 0x40:
+    def reset_all_ecus(self) -> None:
+        """Send UDS ECUReset hard reset (0x11 0x03) to every ECU over the bus."""
+        for ecu_name, ecu in ECUS.items():
+            print(f"  [reset] Sending ECUReset to {ecu_name} (0x{ecu['tx']:03X})")
+            self._send(ecu["tx"], bytes([0x11, 0x03]))
+            time.sleep(0.1)
+
+    def clear_all_dtcs(self) -> None:
+        """Send ClearDTC (0x14 0xFF 0xFF 0xFF) to every ECU over the bus."""
+        for ecu_name, ecu in ECUS.items():
+            self._send(ecu["tx"], bytes([0x14, 0xFF, 0xFF, 0xFF]))
+            time.sleep(0.05)
+
+    def read_dtcs(self, ecu_name: str, status_mask: int = 0xFF) -> set[DTC]:
+        """Read DTCs from a single ECU using service 0x19 subfunction 0x02."""
+        ecu = ECUS[ecu_name]
+        self._send(ecu["tx"], bytes([0x19, 0x02, status_mask]))
+        resp = recv_uds(self.bus, ecu["rx"], ecu["tx"])
+
+        if not resp or resp[0] != 0x59:
             return set()
 
+        # resp: [0x59, 0x02, availability_mask, (code[3], status[1])*]
         dtcs: set[DTC] = set()
-        payload = resp[2:]  # skip positive SID + sub-func + availability mask
-        if len(payload) < 3:
-            return dtcs
-        payload = payload[1:]  # skip availability mask byte
+        payload = resp[3:]  # skip 0x59, sub-func, availability mask
         for i in range(0, len(payload) - 3, 4):
             code = int.from_bytes(payload[i : i + 3], "big")
             status = payload[i + 3]
@@ -201,13 +200,17 @@ class UDSClient:
         return dtcs
 
     def read_all_dtcs(self, status_mask: int = 0xFF) -> set[DTC]:
+        """Read DTCs from all ECUs."""
         result: set[DTC] = set()
         for ecu_name in ECUS:
             result |= self.read_dtcs(ecu_name, status_mask)
         return result
 
     def close(self):
-        self.bus.shutdown()
+        try:
+            self.bus.shutdown()
+        except Exception:
+            pass
 
 
 # ── Background DTC monitor ─────────────────────────────────────────────────
@@ -255,7 +258,7 @@ class DTCAttackTester:
         print(result.summary())
     """
 
-    def __init__(self, gateway: "GatewayECU", poll_interval: float = 0.5):
+    def __init__(self, gateway: GatewayECU, poll_interval: float = 0.5):
         self.gateway = gateway
         self.client = UDSClient()
         self.monitor = DTCMonitor(self.client, poll_interval)
@@ -264,12 +267,12 @@ class DTCAttackTester:
     def _reset_all(self):
         # 1. Send UDS hard reset to all ECUs — triggers reset_faults() inside each ECU
         self.client.reset_all_ecus()
-        # 2. Also reset gateway state (no UDS reset handler for anomaly list)
+        # 2. Reset gateway anomaly list (no UDS service for this)
         self.gateway.uds_dtcs.clear()
         self.gateway.anomalies.clear()
-        # 3. Wait for ECU state to settle after reset
+        # 3. Wait for _update_state() to settle after reset
         time.sleep(3.0)
-        # 4. Clear any DTCs that re-appeared during settle via UDS
+        # 4. Clear any DTCs that re-appeared during settle
         self.client.clear_all_dtcs()
         time.sleep(0.5)
 
@@ -282,7 +285,10 @@ class DTCAttackTester:
     ) -> AttackPhaseResult:
         result = AttackPhaseResult(phase_name=phase_name, start_time=datetime.now())
 
-        print(f"\n[{phase_name}] Reading baseline DTCs...")
+        print(f"\n[{phase_name}] Resetting ECUs...")
+        self._reset_all()
+
+        print(f"[{phase_name}] Reading baseline DTCs...")
         result.dtcs_before = self.client.read_all_dtcs()
 
         print(f"[{phase_name}] Launching attack for {duration}s...")
@@ -313,11 +319,11 @@ class DTCAttackTester:
         self.client.close()
 
 
-# ── Example attacks ────────────────────────────────────────────────────────
+# ── Example attack functions ───────────────────────────────────────────────
 
 
 def fuzz_can_bus(stop_event: threading.Event):
-    """Send random CAN frames to trigger the Gateway's unknown-ID detection."""
+    """Send random CAN frames — triggers Gateway U_FF01 detection."""
     import random
 
     bus = can.interface.Bus(interface=INTERFACE, channel=CHANNEL, bitrate=500_000)
@@ -326,14 +332,16 @@ def fuzz_can_bus(stop_event: threading.Event):
         data = bytes(random.randint(0, 255) for _ in range(8))
         bus.send(can.Message(arbitration_id=arb_id, data=data, is_extended_id=False))
         time.sleep(0.001)
-    bus.shutdown()
+    try:
+        bus.shutdown()
+    except Exception:
+        pass
 
 
 def replay_diag_frames():
     """Replay diagnostic session requests to all ECUs."""
     bus = can.interface.Bus(interface=INTERFACE, channel=CHANNEL, bitrate=500_000)
     for _ in range(50):
-        # Broadcast extended session request
         bus.send(
             can.Message(
                 arbitration_id=0x7DF,
@@ -342,13 +350,16 @@ def replay_diag_frames():
             )
         )
         time.sleep(0.05)
-    bus.shutdown()
+    try:
+        bus.shutdown()
+    except Exception:
+        pass
 
 
 # ── Main ───────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    # ── Start the simulated network ──────────────────────────────────────
+    # Start the simulated ECU network
     engine = EngineECU()
     abs_ecu = ABSECU()
     gateway = GatewayECU()
@@ -363,7 +374,7 @@ if __name__ == "__main__":
     stop_evt = threading.Event()
 
     try:
-        # ── Phase 1: CAN fuzzing → triggers U_FF01 on Gateway ────────────
+        # Phase 1: CAN bus fuzzing → U_FF01 on Gateway, P0217 from warmup
         tester.run_phase(
             "CAN Bus Fuzzing",
             lambda: fuzz_can_bus(stop_evt),
@@ -371,7 +382,7 @@ if __name__ == "__main__":
             settle_time=3,
         )
 
-        # ── Phase 2: Engine fault injection → P0217 / P0219 ──────────────
+        # Phase 2: Engine fault injection → P0217, P0219
         def engine_faults():
             engine.inject_fault("overheat")
             time.sleep(2)
@@ -385,7 +396,7 @@ if __name__ == "__main__":
             settle_time=2,
         )
 
-        # ── Phase 3: ABS fault injection → C0035 / C0265 ─────────────────
+        # Phase 3: ABS fault injection → C0035, C0265
         def abs_faults():
             abs_ecu.inject_fault("wheel_loss")
             time.sleep(2)
@@ -399,7 +410,7 @@ if __name__ == "__main__":
             settle_time=2,
         )
 
-        # ── Phase 4: Diagnostic frame replay ─────────────────────────────
+        # Phase 4: Diagnostic replay → 0 new DTCs expected
         tester.run_phase(
             "DiagSession Replay",
             replay_diag_frames,
