@@ -499,8 +499,10 @@ class CANDecoder(threading.Thread):
         self.verbose = 0
 
     def run(self):
-        print(f"\n{'TIME':>9}  {'ID':>6}  DECODED")
-        print("─" * 60)
+        if self.verbose > 0:
+            print(f"\n{'TIME':>9}  {'ID':>6}  DECODED")
+            print("─" * 60)
+
         while not self._stop.is_set():
             try:
                 msg = self.bus.recv(timeout=0.1)
