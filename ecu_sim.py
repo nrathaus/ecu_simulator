@@ -404,11 +404,11 @@ class ABSECU(UDSServer, threading.Thread):
           "pressure"   → C0265 ABS solenoid circuit fault
         """
         if fault == "wheel_loss":
-            dtc = (0x010035, DTC_TEST_FAILED | DTC_CONFIRMED)
+            dtc = (0x410035, DTC_TEST_FAILED | DTC_CONFIRMED)  # C0035
             if dtc not in self.uds_dtcs:
                 self.uds_dtcs.append(dtc)
         elif fault == "pressure":
-            dtc = (0x010265, DTC_TEST_FAILED | DTC_CONFIRMED)
+            dtc = (0x410265, DTC_TEST_FAILED | DTC_CONFIRMED)  # C0265
             if dtc not in self.uds_dtcs:
                 self.uds_dtcs.append(dtc)
 
@@ -432,7 +432,7 @@ class ABSECU(UDSServer, threading.Thread):
         if random.random() < 0.002:
             self.abs_active = True
             self.speed_kph = max(0, self.speed_kph - random.uniform(10, 30))
-            dtc = (0x005A00, DTC_TEST_FAILED | DTC_CONFIRMED)
+            dtc = (0xC05A00, DTC_TEST_FAILED | DTC_CONFIRMED)  # C5A00
             if dtc not in self.uds_dtcs:
                 self.uds_dtcs.append(dtc)
         else:
@@ -513,7 +513,7 @@ class GatewayECU(UDSServer, threading.Thread):
                 self.handle_uds(msg)
             elif msg.arbitration_id not in self.KNOWN_IDS:
                 self.anomalies.append(msg)
-                dtc = (0x00FF01, DTC_TEST_FAILED | DTC_CONFIRMED)
+                dtc = (0xC0FF01, DTC_TEST_FAILED | DTC_CONFIRMED)  # U_FF01
                 if dtc not in self.uds_dtcs:
                     self.uds_dtcs.append(dtc)
                 print(
