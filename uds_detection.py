@@ -16,6 +16,8 @@ import can
 INTERFACE = "socketcan"
 CHANNEL = "vcan0"
 
+from ecu_sim import ABSECU, CANDecoder, EngineECU, GatewayECU
+
 # ── UDS constants ──────────────────────────────────────────────────────────
 
 ECUS = {
@@ -318,11 +320,22 @@ def replay_diag_frames():
 # ── Main ───────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    # ── Start the simulated network ──────────────────────────────────────
+    engine = EngineECU()
+    abs_ecu = ABSECU()
+    gateway = GatewayECU()
+    decoder = CANDecoder()
+
+    for e in [engine, abs_ecu, gateway, decoder]:
+        e.start()
+
+    time.sleep(1)  # let ECUs settle before testing
+
     tester = DTCAttackTester(poll_interval=0.5)
     stop_evt = threading.Event()
 
     try:
-        # Phase 1: CAN bus fuzzing — should trigger U_FF01 on the Gateway
+        # ── Phase 1: CAN fuzzing → triggers U_FF01 on Gateway ────────────
         tester.run_phase(
             "CAN Bus Fuzzing",
             lambda: fuzz_can_bus(stop_evt),
@@ -330,7 +343,35 @@ if __name__ == "__main__":
             settle_time=3,
         )
 
-        # Phase 2: Diagnostic frame replay
+        # ── Phase 2: Engine fault injection → P0217 / P0219 ──────────────
+        def engine_faults():
+            engine.inject_fault("overheat")
+            time.sleep(2)
+            engine.inject_fault("rpm_spike")
+            time.sleep(2)
+
+        tester.run_phase(
+            "Engine Fault Injection",
+            engine_faults,
+            duration=6,
+            settle_time=2,
+        )
+
+        # ── Phase 3: ABS fault injection → C0035 / C0265 ─────────────────
+        def abs_faults():
+            abs_ecu.inject_fault("wheel_loss")
+            time.sleep(2)
+            abs_ecu.inject_fault("pressure")
+            time.sleep(2)
+
+        tester.run_phase(
+            "ABS Fault Injection",
+            abs_faults,
+            duration=6,
+            settle_time=2,
+        )
+
+        # ── Phase 4: Diagnostic frame replay ─────────────────────────────
         tester.run_phase(
             "DiagSession Replay",
             replay_diag_frames,
@@ -343,3 +384,5 @@ if __name__ == "__main__":
     finally:
         stop_evt.set()
         tester.close()
+        for e in [engine, abs_ecu, gateway, decoder]:
+            e.stop()
