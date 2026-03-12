@@ -143,6 +143,10 @@ class UDSServer:
     bus = None
     uds_txt_id = None
 
+    def reset_faults(self):
+        """Empty by default"""
+        pass
+
     def _calc_key(self, seed: int) -> int:
         return seed ^ 0xDEAD
 
