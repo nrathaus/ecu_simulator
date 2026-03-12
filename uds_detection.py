@@ -18,7 +18,6 @@ from ecu_sim import ABSECU, CANDecoder, EngineECU, GatewayECU
 INTERFACE = "socketcan"
 CHANNEL = "vcan0"
 
-
 # ── UDS constants ──────────────────────────────────────────────────────────
 
 ECUS = {
@@ -50,13 +49,17 @@ DTC_STATUS_BITS = {
 @dataclass(frozen=True)
 class DTC:
     ecu: str
-    code: int
+    code: int  # raw 3-byte integer as received on the wire
     status: int
 
     @property
     def code_str(self) -> str:
-        prefix = {0b00: "P", 0b01: "C", 0b10: "B", 0b11: "U"}[(self.code >> 14) & 0x03]
-        return f"{prefix}{self.code & 0x3FFF:04X}"
+        # Top 2 bits of the first wire byte select the prefix
+        high_byte = (self.code >> 16) & 0xFF
+        prefix = {0b00: "P", 0b01: "C", 0b10: "B", 0b11: "U"}[(high_byte >> 6) & 0x03]
+        # Remaining 14 bits (mask off top 2) form the numeric part
+        number = self.code & 0x3FFF
+        return f"{prefix}{number:04X}"
 
     @property
     def status_str(self) -> str:
