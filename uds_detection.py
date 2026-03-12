@@ -255,29 +255,21 @@ class DTCAttackTester:
         print(result.summary())
     """
 
-    def __init__(
-        self,
-        engine: "EngineECU",
-        abs_ecu: "ABSECU",
-        gateway: "GatewayECU",
-        poll_interval: float = 0.5,
-    ):
-        self.engine = engine
-        self.abs_ecu = abs_ecu
+    def __init__(self, gateway: "GatewayECU", poll_interval: float = 0.5):
         self.gateway = gateway
         self.client = UDSClient()
         self.monitor = DTCMonitor(self.client, poll_interval)
         self.results: list[AttackPhaseResult] = []
 
     def _reset_all(self):
-        # 1. Reset physical state so _update_state() stops regenerating faults
-        self.engine.reset_faults()
-        self.abs_ecu.reset_faults()
+        # 1. Send UDS hard reset to all ECUs — triggers reset_faults() inside each ECU
+        self.client.reset_all_ecus()
+        # 2. Also reset gateway state (no UDS reset handler for anomaly list)
         self.gateway.uds_dtcs.clear()
         self.gateway.anomalies.clear()
-        # 2. Wait long enough for _update_state() to run and clear auto-DTCs
+        # 3. Wait for ECU state to settle after reset
         time.sleep(3.0)
-        # 3. Now clear whatever remains via UDS
+        # 4. Clear any DTCs that re-appeared during settle via UDS
         self.client.clear_all_dtcs()
         time.sleep(0.5)
 
@@ -367,7 +359,7 @@ if __name__ == "__main__":
 
     time.sleep(1)  # let ECUs settle before testing
 
-    tester = DTCAttackTester(engine, abs_ecu, gateway, poll_interval=0.5)
+    tester = DTCAttackTester(gateway, poll_interval=0.5)
     stop_evt = threading.Event()
 
     try:

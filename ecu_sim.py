@@ -191,6 +191,7 @@ class UDSServer:
         t = data[0] if data else 0x01
         self._pos(sid, bytes([t]))
         self._session, self._sec_unlocked = Session.DEFAULT, False
+        self.reset_faults()
 
     def _h_tester_present(self, sid, data):
         self._pos(sid, bytes([data[0] if data else 0x00]))
@@ -555,10 +556,10 @@ class CANDecoder(threading.Thread):
         super().__init__(daemon=True, name="Decoder")
         self.bus = make_bus()
         self._stop = threading.Event()
-        self.verbose = 0
+        self.verbose = False
 
     def run(self):
-        if self.verbose > 0:
+        if self.verbose:
             print(f"\n{'TIME':>9}  {'ID':>6}  DECODED")
             print("─" * 60)
         while not self._stop.is_set():
@@ -568,7 +569,7 @@ class CANDecoder(threading.Thread):
                 break
             if not msg:
                 continue
-            if self.verbose == 0:
+            if not self.verbose:
                 continue
             aid, d, ts = msg.arbitration_id, bytes(msg.data), f"{msg.timestamp:.3f}"
 
