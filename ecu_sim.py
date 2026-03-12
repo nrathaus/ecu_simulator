@@ -69,7 +69,7 @@ def make_bus() -> can.BusABC:
     return can.interface.Bus(interface=INTERFACE, channel=CHANNEL, bitrate=500_000)
 
 
-# ── ISO 15765-2 single-frame helpers ───────────────────────────────────────
+# ── ISO 15765-2 helpers ────────────────────────────────────────────────────
 
 
 def encode_uds(data: bytes) -> bytes:
@@ -89,32 +89,29 @@ def decode_uds(raw: bytes) -> bytes | None:
 def send_uds_response(bus: can.BusABC, arb_id: int, data: bytes) -> None:
     """
     Send a UDS response using ISO 15765-2 framing.
-    - Single Frame  (SF) for payloads up to 7 bytes.
-    - First Frame + Consecutive Frames (FF/CF) for longer payloads.
-    Flow Control from the tester is assumed with block size 0 (send all).
+    Single Frame for ≤7 bytes, First/Consecutive Frames for longer payloads.
     """
     if len(data) <= 7:
-        # Single Frame: [0x0N, d0..dN, padding]
         frame = bytes([len(data)]) + data + bytes(7 - len(data))
         bus.send(can.Message(arbitration_id=arb_id, data=frame, is_extended_id=False))
         return
 
-    # First Frame: [0x1N_high, 0xNN_low, d0..d5]
+    # First Frame
     length = len(data)
     ff = bytes([0x10 | (length >> 8), length & 0xFF]) + data[:6]
     bus.send(can.Message(arbitration_id=arb_id, data=ff, is_extended_id=False))
 
-    # Wait for Flow Control (FC) frame from tester (up to 200 ms)
+    # Wait for Flow Control
     deadline = time.monotonic() + 0.2
     while time.monotonic() < deadline:
         fc = bus.recv(timeout=0.05)
-        if fc and fc.arbitration_id != arb_id:  # ignore own frames
-            if (fc.data[0] & 0xF0) == 0x30:  # FC frame type
+        if fc and fc.arbitration_id != arb_id:
+            if (fc.data[0] & 0xF0) == 0x30:
                 break
     else:
-        return  # no FC received — abort
+        return  # no FC — abort
 
-    # Consecutive Frames: [0x2N, d0..d6]
+    # Consecutive Frames
     remaining = data[6:]
     sn = 1
     while remaining:
@@ -123,7 +120,7 @@ def send_uds_response(bus: can.BusABC, arb_id: int, data: bytes) -> None:
         bus.send(can.Message(arbitration_id=arb_id, data=cf, is_extended_id=False))
         remaining = remaining[7:]
         sn += 1
-        time.sleep(0.001)  # 1 ms separation time (ST_min)
+        time.sleep(0.001)
 
 
 # ── UDS server mixin ───────────────────────────────────────────────────────
@@ -281,27 +278,16 @@ class EngineECU(UDSServer, threading.Thread):
         }
         self.uds_dtcs = []
 
-    def run(self):
-        t_broadcast = time.monotonic()
-        while not self._stop.is_set():
-            try:
-                msg = self.bus.recv(timeout=0.01)
-            except Exception:
-                break
+    def reset_faults(self):
+        """Clear all injected faults and DTCs — call between test phases."""
+        self.uds_dtcs = []
+        self.coolant = 20.0
+        self.rpm = 800
+        self.throttle = 0.0
 
-            if msg and msg.arbitration_id in self.uds_rx_ids:
-                self.handle_uds(msg)
-
-            now = time.monotonic()
-            if now - t_broadcast >= 0.010:
-                self._update_state()
-                self._broadcast()
-                t_broadcast = now
-
-    # ── External fault injection API ──
     def inject_fault(self, fault: str):
         """
-        Trigger a named fault on the Engine ECU. Called externally by the fuzzer.
+        Trigger a named fault on the Engine ECU.
           "overheat"   → P0217 coolant overtemperature
           "rpm_spike"  → P0219 engine overspeed
           "throttle"   → P0122 throttle position sensor low
@@ -318,6 +304,21 @@ class EngineECU(UDSServer, threading.Thread):
             dtc = (0x000122, DTC_TEST_FAILED | DTC_CONFIRMED)
             if dtc not in self.uds_dtcs:
                 self.uds_dtcs.append(dtc)
+
+    def run(self):
+        t_broadcast = time.monotonic()
+        while not self._stop.is_set():
+            try:
+                msg = self.bus.recv(timeout=0.01)
+            except Exception:
+                break
+            if msg and msg.arbitration_id in self.uds_rx_ids:
+                self.handle_uds(msg)
+            now = time.monotonic()
+            if now - t_broadcast >= 0.010:
+                self._update_state()
+                self._broadcast()
+                t_broadcast = now
 
     def _update_state(self):
         self.coolant = min(90, self.coolant + random.uniform(0, 0.3))
@@ -390,29 +391,17 @@ class ABSECU(UDSServer, threading.Thread):
         }
         self.uds_dtcs = []
 
-    def run(self):
-        t_broadcast = time.monotonic()
-        while not self._stop.is_set():
-            try:
-                msg = self.bus.recv(timeout=0.01)
-            except Exception:
-                break
+    def reset_faults(self):
+        """Clear all injected faults and DTCs — call between test phases."""
+        self.uds_dtcs = []
+        self.speed_kph = 0.0
+        self.abs_active = False
 
-            if msg and msg.arbitration_id in self.uds_rx_ids:
-                self.handle_uds(msg)
-
-            now = time.monotonic()
-            if now - t_broadcast >= 0.020:
-                self._update_state()
-                self._broadcast()
-                t_broadcast = now
-
-    # ── External fault injection API ──
     def inject_fault(self, fault: str):
         """
-        Trigger a named fault on the ABS ECU. Called externally by the fuzzer.
-          "wheel_loss"   → C0035 wheel speed sensor fault (FL)
-          "pressure"     → C0265 ABS solenoid circuit fault
+        Trigger a named fault on the ABS ECU.
+          "wheel_loss" → C0035 wheel speed sensor fault (FL)
+          "pressure"   → C0265 ABS solenoid circuit fault
         """
         if fault == "wheel_loss":
             dtc = (0x010035, DTC_TEST_FAILED | DTC_CONFIRMED)
@@ -423,7 +412,23 @@ class ABSECU(UDSServer, threading.Thread):
             if dtc not in self.uds_dtcs:
                 self.uds_dtcs.append(dtc)
 
+    def run(self):
+        t_broadcast = time.monotonic()
+        while not self._stop.is_set():
+            try:
+                msg = self.bus.recv(timeout=0.01)
+            except Exception:
+                break
+            if msg and msg.arbitration_id in self.uds_rx_ids:
+                self.handle_uds(msg)
+            now = time.monotonic()
+            if now - t_broadcast >= 0.020:
+                self._update_state()
+                self._broadcast()
+                t_broadcast = now
+
     def _update_state(self):
+        self.speed_kph = min(120, self.speed_kph + random.uniform(0, 0.3))
         if random.random() < 0.002:
             self.abs_active = True
             self.speed_kph = max(0, self.speed_kph - random.uniform(10, 30))
@@ -554,7 +559,6 @@ class CANDecoder(threading.Thread):
         if self.verbose > 0:
             print(f"\n{'TIME':>9}  {'ID':>6}  DECODED")
             print("─" * 60)
-
         while not self._stop.is_set():
             try:
                 msg = self.bus.recv(timeout=0.1)
@@ -662,7 +666,6 @@ def run_uds_tester():
                 sn_expected += 1
                 if expected_len and len(buf) >= expected_len:
                     return buf[:expected_len]
-
         return None
 
     print("\n[Tester] ── UDS session on Engine ECU ──")
@@ -709,6 +712,10 @@ if __name__ == "__main__":
 
     tester_thread = threading.Thread(target=run_uds_tester, daemon=True)
     tester_thread.start()
+
+    # Expose ECU instances for external fault injection:
+    #   from ecu_sim import engine, abs_ecu, gateway
+    #   engine.inject_fault("overheat")
 
     try:
         while True:
