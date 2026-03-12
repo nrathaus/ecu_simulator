@@ -298,6 +298,27 @@ class EngineECU(UDSServer, threading.Thread):
                 self._broadcast()
                 t_broadcast = now
 
+    # ── External fault injection API ──
+    def inject_fault(self, fault: str):
+        """
+        Trigger a named fault on the Engine ECU. Called externally by the fuzzer.
+          "overheat"   → P0217 coolant overtemperature
+          "rpm_spike"  → P0219 engine overspeed
+          "throttle"   → P0122 throttle position sensor low
+        """
+        if fault == "overheat":
+            self.coolant = 90.0
+        elif fault == "rpm_spike":
+            self.rpm = 8000
+            dtc = (0x000219, DTC_TEST_FAILED | DTC_CONFIRMED | DTC_CHECK_ENGINE_LAMP)
+            if dtc not in self.uds_dtcs:
+                self.uds_dtcs.append(dtc)
+        elif fault == "throttle":
+            self.throttle = 0.0
+            dtc = (0x000122, DTC_TEST_FAILED | DTC_CONFIRMED)
+            if dtc not in self.uds_dtcs:
+                self.uds_dtcs.append(dtc)
+
     def _update_state(self):
         self.coolant = min(90, self.coolant + random.uniform(0, 0.3))
         self.throttle = max(0, min(100, self.throttle + random.uniform(-2, 3)))
@@ -305,12 +326,28 @@ class EngineECU(UDSServer, threading.Thread):
         self.uds_data_ids[0x0001] = self.rpm.to_bytes(2, "big")
         self.uds_data_ids[0x0002] = bytes([int(self.throttle)])
         self.uds_data_ids[0x0003] = int(self.coolant * 10).to_bytes(2, "big")
-        dtc = (0x000217, DTC_TEST_FAILED | DTC_CONFIRMED | DTC_CHECK_ENGINE_LAMP)
+
+        # P0217 — coolant overtemperature
+        dtc_overheat = (
+            0x000217,
+            DTC_TEST_FAILED | DTC_CONFIRMED | DTC_CHECK_ENGINE_LAMP,
+        )
         if self.coolant > 85:
-            if dtc not in self.uds_dtcs:
-                self.uds_dtcs.append(dtc)
+            if dtc_overheat not in self.uds_dtcs:
+                self.uds_dtcs.append(dtc_overheat)
         else:
-            self.uds_dtcs = [x for x in self.uds_dtcs if x != dtc]
+            self.uds_dtcs = [x for x in self.uds_dtcs if x != dtc_overheat]
+
+        # P0219 — engine overspeed (clears once RPM normalises)
+        dtc_overspeed = (
+            0x000219,
+            DTC_TEST_FAILED | DTC_CONFIRMED | DTC_CHECK_ENGINE_LAMP,
+        )
+        if self.rpm > 7000:
+            if dtc_overspeed not in self.uds_dtcs:
+                self.uds_dtcs.append(dtc_overspeed)
+        else:
+            self.uds_dtcs = [x for x in self.uds_dtcs if x != dtc_overspeed]
 
     def _broadcast(self):
         self.bus.send(
@@ -370,8 +407,23 @@ class ABSECU(UDSServer, threading.Thread):
                 self._broadcast()
                 t_broadcast = now
 
+    # ── External fault injection API ──
+    def inject_fault(self, fault: str):
+        """
+        Trigger a named fault on the ABS ECU. Called externally by the fuzzer.
+          "wheel_loss"   → C0035 wheel speed sensor fault (FL)
+          "pressure"     → C0265 ABS solenoid circuit fault
+        """
+        if fault == "wheel_loss":
+            dtc = (0x010035, DTC_TEST_FAILED | DTC_CONFIRMED)
+            if dtc not in self.uds_dtcs:
+                self.uds_dtcs.append(dtc)
+        elif fault == "pressure":
+            dtc = (0x010265, DTC_TEST_FAILED | DTC_CONFIRMED)
+            if dtc not in self.uds_dtcs:
+                self.uds_dtcs.append(dtc)
+
     def _update_state(self):
-        self.speed_kph = min(120, self.speed_kph + random.uniform(0, 0.3))
         if random.random() < 0.002:
             self.abs_active = True
             self.speed_kph = max(0, self.speed_kph - random.uniform(10, 30))
