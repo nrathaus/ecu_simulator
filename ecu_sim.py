@@ -288,9 +288,9 @@ class EngineECU(UDSServer, threading.Thread):
     def inject_fault(self, fault: str):
         """
         Trigger a named fault on the Engine ECU.
-          "overheat"   → P0217 coolant overtemperature
-          "rpm_spike"  → P0219 engine overspeed
-          "throttle"   → P0122 throttle position sensor low
+          "overheat"  → P0217 coolant overtemperature
+          "rpm_spike" → P0219 engine overspeed
+          "throttle"  → P0122 throttle position sensor low
         """
         if fault == "overheat":
             self.coolant = 90.0
@@ -432,7 +432,7 @@ class ABSECU(UDSServer, threading.Thread):
         if random.random() < 0.002:
             self.abs_active = True
             self.speed_kph = max(0, self.speed_kph - random.uniform(10, 30))
-            dtc = (0xC05A00, DTC_TEST_FAILED | DTC_CONFIRMED)  # C5A00
+            dtc = (0x415A00, DTC_TEST_FAILED | DTC_CONFIRMED)  # C5A00
             if dtc not in self.uds_dtcs:
                 self.uds_dtcs.append(dtc)
         else:
@@ -708,7 +708,12 @@ def run_uds_tester():
 if __name__ == "__main__":
     print("Starting simulated vehicle CAN network with UDS support...")
 
-    ecus = [EngineECU(), ABSECU(), GatewayECU(), CANDecoder()]
+    engine = EngineECU()
+    abs_ecu = ABSECU()
+    gateway = GatewayECU()
+    decoder = CANDecoder()
+    ecus = [engine, abs_ecu, gateway, decoder]
+
     for e in ecus:
         e.start()
 
