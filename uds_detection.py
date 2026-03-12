@@ -270,11 +270,12 @@ class DTCAttackTester:
         self.results: list[AttackPhaseResult] = []
 
     def _reset_all(self):
-        self.client.clear_all_dtcs()
         self.engine.reset_faults()
         self.abs_ecu.reset_faults()
         self.gateway.uds_dtcs.clear()
         self.gateway.anomalies.clear()
+        time.sleep(1.0)  # let ECU state stabilise before clearing DTCs
+        self.client.clear_all_dtcs()
         time.sleep(0.5)
 
     def run_phase(
