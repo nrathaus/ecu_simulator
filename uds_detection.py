@@ -13,10 +13,11 @@ from datetime import datetime
 
 import can
 
+from ecu_sim import ABSECU, CANDecoder, EngineECU, GatewayECU
+
 INTERFACE = "socketcan"
 CHANNEL = "vcan0"
 
-from ecu_sim import ABSECU, CANDecoder, EngineECU, GatewayECU
 
 # ── UDS constants ──────────────────────────────────────────────────────────
 
@@ -54,7 +55,7 @@ class DTC:
 
     @property
     def code_str(self) -> str:
-        prefix = {0b00: "P", 0b01: "C", 0b10: "B", 0b11: "U"}[(self.code >> 22) & 0x03]
+        prefix = {0b00: "P", 0b01: "C", 0b10: "B", 0b11: "U"}[(self.code >> 14) & 0x03]
         return f"{prefix}{self.code & 0x3FFF:04X}"
 
     @property
@@ -160,6 +161,17 @@ class UDSClient:
         self.bus = can.interface.Bus(
             interface=INTERFACE, channel=CHANNEL, bitrate=500_000
         )
+
+    def clear_all_dtcs(self):
+        """Send ClearDTC (0x14) to all ECUs to reset state between phases."""
+        for _, ecu in ECUS.items():
+            req = bytes([0x14, 0xFF, 0xFF, 0xFF])
+            self.bus.send(
+                can.Message(
+                    arbitration_id=ecu["tx"], data=encode_sf(req), is_extended_id=False
+                )
+            )
+            time.sleep(0.05)
 
     def read_dtcs(self, ecu_name: str, status_mask: int = 0xFF) -> set[DTC]:
         ecu = ECUS[ecu_name]
