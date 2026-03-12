@@ -255,10 +255,27 @@ class DTCAttackTester:
         print(result.summary())
     """
 
-    def __init__(self, poll_interval: float = 0.5):
+    def __init__(
+        self,
+        engine: "EngineECU",
+        abs_ecu: "ABSECU",
+        gateway: "GatewayECU",
+        poll_interval: float = 0.5,
+    ):
+        self.engine = engine
+        self.abs_ecu = abs_ecu
+        self.gateway = gateway
         self.client = UDSClient()
         self.monitor = DTCMonitor(self.client, poll_interval)
         self.results: list[AttackPhaseResult] = []
+
+    def _reset_all(self):
+        self.client.clear_all_dtcs()
+        self.engine.reset_faults()
+        self.abs_ecu.reset_faults()
+        self.gateway.uds_dtcs.clear()
+        self.gateway.anomalies.clear()
+        time.sleep(0.5)
 
     def run_phase(
         self,
@@ -346,7 +363,7 @@ if __name__ == "__main__":
 
     time.sleep(1)  # let ECUs settle before testing
 
-    tester = DTCAttackTester(poll_interval=0.5)
+    tester = DTCAttackTester(engine, abs_ecu, gateway, poll_interval=0.5)
     stop_evt = threading.Event()
 
     try:
