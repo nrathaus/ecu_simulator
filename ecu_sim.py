@@ -498,6 +498,7 @@ class GatewayECU(UDSServer, threading.Thread):
             0xF18C: b"\x01\x02\x03\x04",
         }
         self.uds_dtcs = []
+        self.show_unknown_id = False
 
     def run(self):
         hb = threading.Thread(target=self._heartbeat, daemon=True)
@@ -516,10 +517,11 @@ class GatewayECU(UDSServer, threading.Thread):
                 dtc = (0xC0FF01, DTC_TEST_FAILED | DTC_CONFIRMED)  # U_FF01
                 if dtc not in self.uds_dtcs:
                     self.uds_dtcs.append(dtc)
-                print(
-                    f"[Gateway] ⚠ Unknown ID 0x{msg.arbitration_id:03X} "
-                    f"data={bytes(msg.data).hex()} → DTC U_FF01 set"
-                )
+                if self.show_unknown_id:
+                    print(
+                        f"[Gateway] ⚠ Unknown ID 0x{msg.arbitration_id:03X} "
+                        f"data={bytes(msg.data).hex()} → DTC U_FF01 set"
+                    )
 
     def _heartbeat(self):
         while not self._stop.is_set():
