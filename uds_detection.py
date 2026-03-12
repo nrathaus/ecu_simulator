@@ -365,9 +365,6 @@ if __name__ == "__main__":
     gateway = GatewayECU()
     decoder = CANDecoder()
 
-    for e in [engine, abs_ecu, gateway, decoder]:
-        e.start()
-
     time.sleep(1)  # let ECUs settle before testing
 
     tester = DTCAttackTester(gateway, poll_interval=0.5)
@@ -423,5 +420,3 @@ if __name__ == "__main__":
     finally:
         stop_evt.set()
         tester.close()
-        for e in [engine, abs_ecu, gateway, decoder]:
-            e.stop()
