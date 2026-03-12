@@ -170,7 +170,6 @@ class UDSServer:
         if not payload:
             return
         sid, data = payload[0], payload[1:]
-        print(f"{sid=} {data=}")
         {
             SID.DIAGNOSTIC_SESSION_CONTROL: self._h_session,
             SID.ECU_RESET: self._h_reset,
