@@ -270,11 +270,14 @@ class DTCAttackTester:
         self.results: list[AttackPhaseResult] = []
 
     def _reset_all(self):
+        # 1. Reset physical state so _update_state() stops regenerating faults
         self.engine.reset_faults()
         self.abs_ecu.reset_faults()
         self.gateway.uds_dtcs.clear()
         self.gateway.anomalies.clear()
-        time.sleep(2.0)  # give _update_state() time to settle before UDS clear
+        # 2. Wait long enough for _update_state() to run and clear auto-DTCs
+        time.sleep(3.0)
+        # 3. Now clear whatever remains via UDS
         self.client.clear_all_dtcs()
         time.sleep(0.5)
 
