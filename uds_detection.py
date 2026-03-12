@@ -274,7 +274,7 @@ class DTCAttackTester:
         self.abs_ecu.reset_faults()
         self.gateway.uds_dtcs.clear()
         self.gateway.anomalies.clear()
-        time.sleep(1.0)  # let ECU state stabilise before clearing DTCs
+        time.sleep(2.0)  # give _update_state() time to settle before UDS clear
         self.client.clear_all_dtcs()
         time.sleep(0.5)
 
